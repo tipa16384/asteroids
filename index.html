@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser-arcade-physics.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.0.min.js"
+        integrity="sha256-2Pmvv0kuTBOenSvLm6bvfBSSHrUJ+3A7x6P5Ebd07/g=" crossorigin="anonymous"></script>
+
+    <style>
+        body {
+            margin: 0;
+            background-color: black;
+        }
+
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+
+<body>
+
+    <script>
+        const dwidth = 740;
+        const dheight = (dwidth * 3)/4;
+        const numRocks = 5;
+
+        const url = 'https://ifdero7svk.execute-api.us-east-1.amazonaws.com/test/high-scores';
+
+        var config = {
+            type: Phaser.AUTO,
+            scale: {
+                mode: Phaser.Scale.FIT,
+                parent: 'phaser-example',
+                autoCenter: Phaser.Scale.CENTER_BOTH,
+                width: dwidth,
+                height: dheight
+            },
+
+            physics: {
+                default: 'arcade',
+                arcade: {
+                    gravity: { y: 0 }
+                }
+            },
+            input: {
+                gamepad: true
+            },
+            scene: {
+                preload: preload,
+                create: create,
+                update: update
+            }
+        };
+
+        var game = new Phaser.Game(config);
+
+        function preload() {
+            this.load.setBaseURL('.');
+
+            // load sprite sheet asteroids_ship_map.png, 50x26 pixels per frame, 2 frames vertically stacked
+            this.load.spritesheet('asteroids_ship', 'assets/asteroids_ship_map.png', { frameWidth: 50, frameHeight: 26 });
+            this.load.spritesheet('rocks', 'assets/rocks.png', { frameWidth: 100, frameHeight: 101 });
+
+            this.load.image('laser', 'assets/laser.png');
+            this.load.audio("zzzzap", ["assets/laser.mp3"]);
+            this.load.audio("rocketsound", ["assets/rocketsound.mp3"]);
+            this.load.audio("explosion", ["assets/explosion.mp3"]);
+        }
+
+        function create() {
+
+            // create a group for the asteroids
+            const asteroids = this.add.group();
+            this.asteroids = asteroids;
+
+            makeSomeRocks(this);
+
+            // ship is first frame from the sprite sheet
+
+            // add ship1 as a sprite and place it in the center
+            const ship1 = this.physics.add.sprite(dwidth / 2, dheight / 2, 'asteroids_ship');
+
+            this.ship1 = ship1;
+
+            this.ship1.setDamping(true);
+            this.ship1.setDrag(0.99);
+            this.ship1.setMaxVelocity(200);
+
+            this.laser = this.physics.add.sprite(dwidth / 2, dheight / 2, 'laser');
+            // make it invisible
+            this.laser.setVisible(false);
+
+            this.cursors = this.input.keyboard.createCursorKeys();
+            this.fireKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+            this.reverseKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.X);
+            this.escapeKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ESC);
+
+            this.laserSound = this.sound.add("zzzzap", { loop: false });
+            this.rocketsound = this.sound.add("rocketsound", { loop: true });
+            this.rocketsound.isplaying = false;
+
+            // create a text object that will display in 24 pt Arial font at the top right of the screen with the text "Score: 00000"
+            this.scoreText = this.add.text(10, 10, 'X', { fontSize: '24px', fill: '#fff' });
+            setScore(this, 0);
+
+            // create a GAME OVER text object that displays in 96 pt Arial font in the center of the screen
+            this.gameOverText = this.add.text(dwidth / 2, dheight / 4, 'GAME OVER', { fontSize: '96px', fill: '#fff' });
+            this.gameOverText.setOrigin(0.5);
+            this.gameOverText.setVisible(false);
+            // set z-index to 1 so it displays on top of everything else
+            this.gameOverText.setDepth(1);
+
+            // create a group for text objects
+            const textGroup = this.add.group();
+            // add ten text objects to the group representing mock high scores. they will display beneath the GAME OVER text in two columns of five scores each
+            for (let i = 0; i < 10; i++) {
+                const tx = (i % 2) * (dwidth / 2) + (dwidth / 4);
+                const ty = dheight/2 + Math.floor(i/2) * 25;
+                const text = this.add.text(tx, ty, '000000', { fontSize: '24px', fill: '#fff' });
+                text.setOrigin(0.5);
+                textGroup.add(text);
+            }
+
+            // make the textGroup visible
+            textGroup.setVisible(true);
+            // make textGroup alpha zero
+            textGroup.setAlpha(0);
+            // set depth to 1 so it displays on top of everything else
+            textGroup.setDepth(1);
+
+            this.textGroup = textGroup;
+
+            this.gameOver = false;
+            this.invulnerabilityFrames = 180;
+            this.fullScreen = false;
+
+            // connect gamepads
+            this.input.gamepad.once('connected', function (pad) {
+                console.log('Connected to pad ' + pad.index + '!');
+            });
+
+            // log to console whether or not a controller is connected
+            console.log('gamepads = ' + this.input.gamepad.total);
+
+            // add a listener to the gamepad button 1 down event to call fireBullet
+            this.input.gamepad.on('down', function (pad, button, index) {
+                if (!this.gameOver && button.index == 2) {
+                    fireBullet(this, this.ship1);
+                }
+            }, this);
+
+            this.escapeKey.on('down', function () {
+                if (this.scale.isFullscreen) {
+                    this.scale.stopFullscreen();
+                }
+                else {
+                    this.scale.startFullscreen();
+                }
+
+            }, this);
+
+            const oneKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ONE);
+            oneKey.on('down', function () {
+                // reset the game
+                this.gameOverText.setVisible(false);
+                this.textGroup.setAlpha(0);
+                setScore(this, 0);
+                this.gameOver = false;
+                this.invulnerabilityFrames = 180;
+                this.ship1.setFrame(0);
+                this.ship1.setAngularVelocity(0);
+                this.ship1.body.setVelocity(0, 0);
+                this.ship1.x = dwidth / 2;
+                this.ship1.y = dheight / 2;
+                this.ship1.rotation = 0;
+                this.ship1.setAcceleration(0);
+                this.ship1.setAngularVelocity(0);
+                // remove all asteroids
+                this.asteroids.clear(true, true);
+            }, this);
+        }
+
+        function update() {
+            // if ship1 is visible, then update it
+            if (!this.gameOver) {
+                updateShip(this);
+            }
+
+            // if collision between asteroids and the lasers, move the asteroids to center
+            this.physics.collide(this.laser, this.asteroids, function (laser, asteroid) {
+                // update the score with 100 * the scaleFactor
+                asteroid.scene.score += 100 * asteroid.scaleFactor;
+                setScore(asteroid.scene, asteroid.scene.score);
+
+                // if scaleFactor is less than 4, then create two new asteroids at the same position with random rotation and velocity with an incremented scale factor and same sprite as the parent
+                if (asteroid.scaleFactor < 4) {
+                    for (let i = 0; i < 2; i++) {
+                        // Create a custom polygon game object
+                        const rock = asteroid.scene.physics.add.sprite(0, 0, 'rocks', asteroid.frame.name);
+                        rock.scaleFactor = asteroid.scaleFactor + 1;
+
+                        // add the polygon game object to the physics system
+                        asteroid.scene.physics.add.existing(rock);
+
+                        initRock(rock);
+                        rock.x = asteroid.x;
+                        rock.y = asteroid.y;
+
+                        // add the asteroid to the group
+                        asteroid.scene.asteroids.add(rock);
+                    }
+                }
+
+                // remove asteroids from group and physics system
+                asteroid.destroy();
+
+                laser.setVisible(false);
+                laser.x = -1000;
+                laser.y = -1000;
+            });
+
+            // if no asteroids left, then create some more
+            if (this.asteroids.countActive(true) == 0) {
+                makeSomeRocks(this);
+                this.invulnerabilityFrames = 180;
+            }
+
+            // wrap all the asteroids
+            this.physics.world.wrap(this.asteroids, 16);
+            // wrap the ship
+            this.physics.world.wrap(this.ship1, 16);
+        }
+
+        function setScore(obj, score) {
+            obj.score = score;
+            obj.scoreText.setText('Score: ' + obj.score.toString().padStart(6, '0'));
+        }
+
+        function updateShip(obj) {
+            obj.invulnerabilityFrames--;
+
+            if (obj.invulnerabilityFrames > 0 && (obj.invulnerabilityFrames & 8) == 8) {
+                obj.ship1.setTint(0x006600);
+            }
+            else {
+                obj.ship1.setTint(0xffffff);
+            }
+
+            // if gamepad button 0 is down
+            var gamepad = obj.input.gamepad;
+            var thrustButtonDown = false;
+            var leftButtonDown = false;
+            var rightButtonDown = false;
+
+            if (gamepad.enabled && gamepad.gamepads.length > 0) {
+                var gamepad1 = gamepad.gamepads[0];
+                thrustButtonDown = gamepad1.buttons[0].pressed;
+                leftButtonDown = gamepad1.buttons[14].pressed;
+                rightButtonDown = gamepad1.buttons[15].pressed;
+            }
+
+            if (obj.cursors.up.isDown || thrustButtonDown) {
+                obj.physics.velocityFromRotation(obj.ship1.rotation, 200, obj.ship1.body.acceleration);
+                obj.ship1.setFrame(1);
+
+                if (!obj.rocketsound.isplaying) {
+                    obj.rocketsound.play();
+                    obj.rocketsound.isplaying = true;
+                }
+            }
+            else {
+                obj.ship1.setAcceleration(0);
+                obj.ship1.setFrame(0);
+                obj.rocketsound.isplaying = false;
+                obj.rocketsound.stop();
+            }
+
+            if (obj.cursors.left.isDown || leftButtonDown) {
+                obj.ship1.setAngularVelocity(-300);
+            }
+            else if (obj.cursors.right.isDown || rightButtonDown) {
+                obj.ship1.setAngularVelocity(300);
+            }
+            else {
+                obj.ship1.setAngularVelocity(0);
+            }
+
+            if (Phaser.Input.Keyboard.JustDown(obj.fireKey)) {
+                fireBullet(obj, obj.ship1);
+            }
+
+            if (Phaser.Input.Keyboard.JustDown(obj.reverseKey)) {
+                this.obj.rotation += Math.PI;
+            }
+
+            // if collision between asteroids and the ships, move the ships to center
+            obj.physics.collide(obj.ship1, obj.asteroids, function (ship, asteroid) {
+                if (ship.scene.invulnerabilityFrames > 0) {
+                    return;
+                }
+                // set ship to frame 2
+                ship.setFrame(2);
+                // set rotation speed very fast
+                ship.setAngularVelocity(250);
+                // set velocity to 20
+                ship.body.setVelocity(20, 20);
+                // turn off all sounds
+                ship.scene.rocketsound.stop();
+                ship.scene.laserSound.stop();
+                // play explosion sound
+                ship.scene.sound.play("explosion", { loop: false });
+                // turn on game over text
+                ship.scene.gameOverText.scale = 0.1;
+                ship.scene.gameOverText.setVisible(true);
+                ship.scene.gameOver = true;
+
+                postHighScore(ship.scene.score);
+
+                // tween game over text scale from 0.1 to 1 over two seconds
+                ship.scene.tweens.add({
+                    targets: ship.scene.gameOverText,
+                    scale: { from: 0.1, to: 1 },
+                    duration: 2000,
+                    ease: 'Elastic',
+                    easeParams: [3, 0.5],
+                    delay: 1000,
+                    oncomplete: showHighScores.bind(ship.scene)
+                });
+
+                // fade the high scores in with a slow tween
+                ship.scene.tweens.add({
+                    targets: ship.scene.textGroup.getChildren(),
+                    alpha: { from: 0, to: 1 },
+                    duration: 2000,
+                    ease: 'Linear',
+                    delay: 1000
+                });
+            });
+        }
+
+        function postHighScore(highScore) {
+
+            const requestBody = JSON.stringify({
+                gameKey: 'asteroids',
+                highScore: highScore
+            });
+
+            $.ajax({
+                type: 'POST',
+                url: url, // Replace with the resource path
+                contentType: 'application/json',
+                data: requestBody,
+                success: function (data) {
+                    console.log(data.message); // Message from the Lambda function
+                },
+                error: function (error) {
+                    console.error('Error:', error);
+                }
+            });
+        }
+
+        function showHighScores() {
+
+            // Make ajax call to get high scores with jQuery
+
+            const thisProxy = this;
+
+            var xhttp = new XMLHttpRequest();
+
+            xhttp.onreadystatechange = function () {
+                if (this.readyState == 4 && this.status == 200) {
+
+                    const highScores = JSON.parse(this.responseText);
+                    // set the text objects in thisProxy.textGroup to the high scores
+                    for (let i = 0; i < 10; i++) {
+                        const text = thisProxy.textGroup.getChildren()[i];
+                        if (i < highScores.length) {
+                            // set text to high score followed by the date. the date is in ISO form. We want the date in mm/dd/yyyy format
+                            const date = new Date(highScores[i].scoreDate);
+                            text.setText(highScores[i].highScore.toString().padStart(6, '0') + ' ' + (date.getMonth() + 1).toString().padStart(2, '0') + '/' + date.getDate().toString().padStart(2, '0') + '/' + date.getFullYear().toString());
+
+                            // if the high score is the same as the current score, then set the color to yellow
+                            if (highScores[i].highScore == thisProxy.score) {
+                                text.setColor('#ffff00');
+                            }
+                            else {
+                                text.setColor('#ffffff');
+                            }
+                        }
+                        else {
+                            text.setText('');
+                            text.setColor('#ffffff');
+                        }
+                    }
+
+                    // make the textGroup visible
+                    thisProxy.textGroup.setVisible(true);
+                }
+            };
+            xhttp.open("GET", url + "?gameKey=asteroids", true);
+            xhttp.send();
+        }
+
+        function makeSomeRocks(obj) {
+            const numAsteroidFrames = 2;
+
+            // create a group for the asteroids
+            const asteroids = obj.asteroids;
+
+            // Generate the random polygon points
+            for (let i = 0; i < numRocks; i++) {
+                // Create a custom polygon game object
+                const rock = obj.physics.add.sprite(0, 0, 'rocks', i % numAsteroidFrames);
+                rock.scaleFactor = 1;
+
+                // add the polygon game object to the physics system
+                obj.physics.add.existing(rock);
+
+                initRock(rock);
+
+                // add the asteroid to the group
+                asteroids.add(rock);
+            }
+        }
+
+        function fireBullet(obj, ship) {
+            var rotation = ship.rotation;
+
+            // place laser at 30 pixels in front of the ship in the same rotation
+            obj.laser.x = ship.x + Math.cos(rotation) * 30;
+            obj.laser.y = ship.y + Math.sin(rotation) * 30;
+            obj.laser.rotation = rotation;
+
+            // set velocity to 1000
+            obj.physics.velocityFromRotation(rotation, 1000, obj.laser.body.velocity);
+            // make it visible
+            obj.laser.setVisible(true);
+            obj.laserSound.play();
+        }
+
+        function getRandomInt(max) {
+            return Math.floor(Math.random() * max);
+        }
+
+        function initRock(rock) {
+            rock.x = getRandomInt(dwidth);
+            rock.y = getRandomInt(dheight);
+            // have it bounce around
+            rock.body.setVelocity(getRandomInt(100) - 50, getRandomInt(100) - 50);
+            // make it rotate
+            rock.body.setAngularVelocity(getRandomInt(100) - 50);
+
+            // scale rock to the scaleFactor
+            rock.setScale(1.0 / rock.scaleFactor);
+        }
+    </script>
+
+</body>
+
+</html>
